@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aqlli rozetka</title>
+<style>
+  :root {
+    --bg: #e4eaf1;
+    --ink: #14233a;
+    --muted: #5b6b80;
+    --panel: #f4f7fa;
+    --on: #f2a900;
+    --off: #9aa8ba;
+    --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101a29;
+      --ink: #e6edf5;
+      --muted: #8d9db1;
+      --panel: #182539;
+      --on: #ffbe2e;
+      --off: #4a5a70;
+      --err: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+  }
+  main { width: 100%; max-width: 380px; text-align: center; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; letter-spacing: .01em; }
+  .status { color: var(--muted); margin: 0 0 28px; min-height: 1.4em; }
+  .status.error { color: var(--err); }
+
+  /* Rozetka shakli */
+  .plate {
+    background: var(--panel);
+    border-radius: 36px;
+    padding: 36px 28px 28px;
+    box-shadow: 0 2px 0 rgba(255,255,255,.4) inset, 0 18px 40px rgba(20,35,58,.18);
+  }
+  .holes { display: flex; justify-content: center; gap: 46px; margin-bottom: 30px; }
+  .hole {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--off);
+    box-shadow: inset 0 3px 5px rgba(0,0,0,.35);
+    transition: background .25s;
+  }
+  .plate.on .hole { background: var(--on); }
+
+  #power {
+    width: 150px; height: 150px; border-radius: 50%;
+    border: 6px solid var(--off);
+    background: transparent;
+    color: var(--off);
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: border-color .25s, color .25s, transform .1s;
+  }
+  #power:active { transform: scale(.96); }
+  #power:disabled { opacity: .45; cursor: not-allowed; }
+  #power:focus-visible, .link:focus-visible { outline: 3px solid var(--ink); outline-offset: 4px; }
+  .plate.on #power { border-color: var(--on); color: var(--on); }
+  #power svg { width: 64px; height: 64px; }
+  .state { margin-top: 18px; font-size: 1.15rem; font-weight: 700; }
+
+  .actions { margin-top: 26px; display: flex; gap: 10px; justify-content: center; }
+  .link {
+    font: inherit; font-size: .95rem;
+    padding: 10px 18px; border-radius: 999px;
+    border: 2px solid var(--ink); background: transparent; color: var(--ink);
+    cursor: pointer;
+  }
+  .link.primary { background: var(--ink); color: var(--bg); }
+  .link:disabled { opacity: .4; cursor: not-allowed; }
+  .note { margin-top: 22px; font-size: .82rem; color: var(--muted); line-height: 1.5; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Aqlli rozetka</h1>
+  <p id="status" class="status">Ulanmagan</p>
+
+  <div id="plate" class="plate">
+    <div class="holes"><span class="hole"></span><span class="hole"></span></div>
+    <button id="power" disabled aria-label="Rozetkani yoqish yoki o'chirish">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/>
+      </svg>
+    </button>
+    <div id="state" class="state">O'chiq</div>
+  </div>
+
+  <div class="actions">
+    <button id="connect" class="link primary">Ulanish</button>
+    <button id="disconnect" class="link" disabled>Uzish</button>
+  </div>
+
+  <p class="note">
+    HM-10 (BLE) modul bilan ishlaydi. Android Chrome yoki kompyuterda Chrome/Edge ishlating.
+    Sahifa HTTPS yoki localhost orqali ochilishi kerak.
+  </p>
+</main>
+
+<script>
+  const SERVICE = 0xFFE0;
+  const CHAR = 0xFFE1;
+
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $("status"), plate = $("plate"), stateEl = $("state");
+  const powerBtn = $("power"), connectBtn = $("connect"), disconnectBtn = $("disconnect");
+
+  let device = null, characteristic = null, isOn = false;
+  const encoder = new TextEncoder(), decoder = new TextDecoder();
+
+  function setStatus(text, error = false) {
+    statusEl.textContent = text;
+    statusEl.classList.toggle("error", error);
+  }
+
+  function render() {
+    plate.classList.toggle("on", isOn);
+    stateEl.textContent = isOn ? "Yoqiq" : "O'chiq";
+  }
+
+  function setConnected(connected) {
+    powerBtn.disabled = !connected;
+    disconnectBtn.disabled = !connected;
+    connectBtn.disabled = connected;
+  }
+
+  async function send(text) {
+    if (!characteristic) return;
+    const data = encoder.encode(text);
+    if (characteristic.writeValueWithoutResponse) {
+      await characteristic.writeValueWithoutResponse(data);
+    } else {
+      await characteristic.writeValue(data);
+    }
+  }
+
+  function onNotify(event) {
+    const msg = decoder.decode(event.target.value).toUpperCase();
+    if (msg.includes("YOQILDI") || msg.includes("YOQIQ")) isOn = true;
+    else if (msg.includes("OCHIRILDI") || msg.includes("OCHIQ")) isOn = false;
+    render();
+  }
+
+  async function connect() {
+    if (!navigator.bluetooth) {
+      setStatus("Bu brauzer Bluetooth'ni qo'llamaydi. Chrome ishlating.", true);
+      return;
+    }
+    try {
+      setStatus("Qurilma qidirilmoqda...");
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [SERVICE] }],
+        optionalServices: [SERVICE]
+      });
+      device.addEventListener("gattserverdisconnected", onDisconnected);
+      setStatus("Ulanmoqda...");
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE);
+      characteristic = await service.getCharacteristic(CHAR);
+      await characteristic.startNotifications();
+      characteristic.addEventListener("characteristicvaluechanged", onNotify);
+      setConnected(true);
+      setStatus("Ulandi: " + (device.name || "HM-10"));
+      await send("S"); // holatni so'rash
+    } catch (err) {
+      setConnected(false);
+      setStatus("Ulanib bo'lmadi: " + err.message, true);
+    }
+  }
+
+  function onDisconnected() {
+    characteristic = null;
+    setConnected(false);
+    setStatus("Aloqa uzildi. Qayta ulaning.", true);
+  }
+
+  function disconnect() {
+    if (device && device.gatt.connected) device.gatt.disconnect();
+  }
+
+  powerBtn.addEventListener("click", async () => {
+    try {
+      await send(isOn ? "0" : "1");
+      isOn = !isOn; // Arduino javob yuborsa, onNotify tuzatadi
+      render();
+    } catch (err) {
+      setStatus("Yuborib bo'lmadi: " + err.message, true);
+    }
+  });
+  connectBtn.addEventListener("click", connect);
+  disconnectBtn.addEventListener("click", disconnect);
+  render();
+</script>
+</body>
+</html>
